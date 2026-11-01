@@ -11,8 +11,6 @@ do-not-add-suffix-to-package-name.patch
 Move-some-account-settings-back-to-privacy-settings.patch
 kill-Vision.patch
 kill-Location-fall-back-to-system.patch
-kill-Auth.patch
-Remove-binary-blob-integrations.patch
 Remove-SMS-integration.patch
 Remove-voice-recognition-integration.patch
 Do-not-compile-QR-code-sharing.patch
@@ -301,7 +299,6 @@ Disable-device-bound-session.patch
 Keep-disabled-CpuPerformance.patch
 Immediately-destroy-shared-workers-when-closing-the-page.patch
 Disable-minikin-hyphenation.patch
-Disable-integration-with-Gemini.patch
 Disable-AppRating.patch
 Enable-Android-DevTools-Frontend.patch
 Reduce-input-capability-fingerprinting-through-normalization.patch
