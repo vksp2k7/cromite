@@ -1,0 +1,136 @@
+name: Port Google sign-in and Gemini — Android arm64
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build
+        required: true
+        default: port/google-signin-gemini-android
+        type: string
+
+permissions:
+  contents: read
+
+# This workflow intentionally targets a pre-provisioned self-hosted runner. A
+# Chromium checkout/build consumes substantially more storage and RAM than a
+# GitHub-hosted runner provides.
+jobs:
+  build-arm64-release:
+    name: Build arm64 official-style release APK
+    runs-on: [self-hosted, linux, x64, cromite-builder]
+    timeout-minutes: 1440
+    env:
+      WORKSPACE: /home/lg/working_dir
+      TARGET_ISDEBUG: false
+      TARGET_OS: android
+      USE_KEYSTORE: true
+      CROMITE_REF: ${{ inputs.ref }}
+
+    steps:
+      - name: Checkout Cromite port branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+
+      - name: Verify builder prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "$WORKSPACE/chromium/src/.git" || {
+            echo "Missing pre-provisioned Chromium checkout at $WORKSPACE/chromium/src" >&2
+            exit 1
+          }
+          test -f "$WORKSPACE/depot_tools/siso.py" || {
+            echo "Missing depot_tools/siso.py under $WORKSPACE/depot_tools" >&2
+            exit 1
+          }
+          command -v java >/dev/null
+          command -v javac >/dev/null
+          command -v gn >/dev/null
+          command -v ninja >/dev/null
+          java -version
+          javac -version
+          test -n "${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}" || {
+            echo "ANDROID_SDK_ROOT or ANDROID_HOME is required on the runner" >&2
+            exit 1
+          }
+          test "$(df -Pk "$WORKSPACE" | awk 'NR==2 {print $4}')" -ge 120000000 || {
+            echo "At least 120 GB free is required for this build workspace" >&2
+            exit 1
+          }
+
+      - name: Link checked-out Cromite tree into the build workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$WORKSPACE"
+          ln -sfn "$GITHUB_WORKSPACE" "$WORKSPACE/cromite"
+          git -C "$WORKSPACE/cromite" status --short --branch
+
+      - name: Generate ephemeral sample release keystore
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f "$WORKSPACE/cromite.keystore"
+          KEYSTORE_PASSWORD="$(python3 - <<'PY'
+          import secrets
+          print(secrets.token_urlsafe(32))
+          PY
+          )"
+          keytool -genkeypair \
+            -keystore "$WORKSPACE/cromite.keystore" \
+            -storetype PKCS12 \
+            -alias cromite \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -keypass "$KEYSTORE_PASSWORD" \
+            -dname 'CN=Cromite sample release, OU=Local testing, O=Cromite, C=US' \
+            -noprompt
+          chmod 600 "$WORKSPACE/cromite.keystore"
+          echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Apply Cromite patch stack
+        shell: bash
+        working-directory: ${{ env.WORKSPACE }}
+        run: |
+          set -euo pipefail
+          git -C chromium/src config user.name 'Cromite CI'
+          git -C chromium/src config user.email 'cromite-ci@localhost'
+          bash cromite/tools/images/cromite-source/apply-cromite-patches.sh
+
+      - name: Generate arm64 official-style release build
+        shell: bash
+        working-directory: ${{ env.WORKSPACE }}/chromium/src
+        run: |
+          set -euo pipefail
+          export PATH="$WORKSPACE/chromium/src/third_party/llvm-build/Release+Asserts/bin:$WORKSPACE/depot_tools:/usr/local/go/bin:$PATH"
+          rm -rf out/arm64
+          gn gen out/arm64 --args="target_os = \"android\" target_cpu = \"arm64\" $(cat "$WORKSPACE/cromite/build/cromite.gn_args")"
+          gn args out/arm64 --list --short
+          python3 "$WORKSPACE/depot_tools/siso.py" ninja -C out/arm64 chrome_public_bundle --offline
+          python3 "$WORKSPACE/depot_tools/siso.py" ninja -C out/arm64 chrome_public_apk --offline
+          test -s out/arm64/apks/ChromePublic.apk
+          cp "$WORKSPACE/cromite/build/RELEASE" out/arm64/RELEASE
+
+      - name: Verify sample release APK properties
+        shell: bash
+        working-directory: ${{ env.WORKSPACE }}/chromium/src
+        run: |
+          set -euo pipefail
+          test "$TARGET_ISDEBUG" = false
+          sha256sum out/arm64/apks/ChromePublic.apk
+          keytool -list -v -keystore "$WORKSPACE/cromite.keystore" \
+            -storepass "$KEYSTORE_PASSWORD" | grep -E 'Alias name:|Entry type:|Owner:'
+
+      - name: Upload arm64 sample release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: cromite-google-signin-gemini-arm64-sample-release
+          if-no-files-found: error
+          path: |
+            /home/lg/working_dir/chromium/src/out/arm64/apks/ChromePublic.apk
+            /home/lg/working_dir/chromium/src/out/arm64/RELEASE
